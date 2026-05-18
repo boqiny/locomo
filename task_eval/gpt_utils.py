@@ -8,7 +8,7 @@ import os, json
 from tqdm import tqdm
 import time
 from global_methods import run_chatgpt
-from task_eval.rag_utils import get_embeddings
+# Harbor-parity: rag_utils pulls torch; lazy-import inside prepare_for_rag.
 import tiktoken
 import numpy as np
 
@@ -19,7 +19,13 @@ MAX_LENGTH={'gpt-4-turbo': 128000,
             'gpt-3.5-turbo-8k': 8000,
             'gpt-3.5-turbo-4k': 4000,
             'gpt-3.5-turbo': 4096,
-            'gpt-4-32k': 320000}
+            'gpt-4-32k': 320000,
+            # gpt-5 family has a 400k context window; reserve some headroom for
+            # the response. The conversation packer in get_input_context uses
+            # this value as the budget cap.
+            'gpt-5-mini': 272000,
+            'gpt-5': 272000,
+            'gpt-5-nano': 272000}
 PER_QA_TOKEN_BUDGET = 50
 
 QA_PROMPT = """
@@ -65,7 +71,7 @@ def process_ouput(text):
 
 
 def prepare_for_rag(args, data):
-
+    from task_eval.rag_utils import get_embeddings  # noqa: F401 — lazy: pulls torch
     dataset_prefix = os.path.splitext(os.path.split(args.data_file)[-1])[0]
 
     if args.rag_mode == "summary":
@@ -207,7 +213,13 @@ def get_input_context(data, num_question_tokens, encoding, args):
 def get_gpt_answers(in_data, out_data, prediction_key, args):
 
 
-    encoding = tiktoken.encoding_for_model('gpt-3.5-turbo-16k' if any([k in args.model for k in ['16k', '12k', '8k', '4k']]) else args.model)
+    _enc_model = 'gpt-3.5-turbo-16k' if any([k in args.model for k in ['16k', '12k', '8k', '4k']]) else args.model
+    try:
+        encoding = tiktoken.encoding_for_model(_enc_model)
+    except KeyError:
+        # Newer model ids (gpt-5 family, etc.) may not be in older tiktoken
+        # tables. Fall back to the o200k_base encoding shared by gpt-4o / gpt-5.
+        encoding = tiktoken.get_encoding("o200k_base")
     assert len(in_data['qa']) == len(out_data['qa']), (len(in_data['qa']), len(out_data['qa']))
 
     # start instruction prompt
@@ -243,13 +255,16 @@ def get_gpt_answers(in_data, out_data, prediction_key, args):
             if qa['category'] == 2:
                 questions.append(qa['question'] + ' Use DATE of CONVERSATION to answer with an approximate date.')
             elif qa['category'] == 5:
+                # Harbor-parity: current locomo10.json stores the adversarial
+                # answer under 'adversarial_answer'; older format used 'answer'.
+                adv_answer = qa.get('answer') or qa.get('adversarial_answer') or ''
                 question = qa['question'] + " Select the correct answer: (a) {} (b) {}. "
                 if random.random() < 0.5:
-                    question = question.format('Not mentioned in the conversation', qa['answer'])
-                    answer = {'a': 'Not mentioned in the conversation', 'b': qa['answer']}
+                    question = question.format('Not mentioned in the conversation', adv_answer)
+                    answer = {'a': 'Not mentioned in the conversation', 'b': adv_answer}
                 else:
-                    question = question.format(qa['answer'], 'Not mentioned in the conversation')
-                    answer = {'b': 'Not mentioned in the conversation', 'a': qa['answer']}
+                    question = question.format(adv_answer, 'Not mentioned in the conversation')
+                    answer = {'b': 'Not mentioned in the conversation', 'a': adv_answer}
 
                 cat_5_idxs.append(len(questions))
                 questions.append(question)

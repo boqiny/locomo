@@ -9,12 +9,10 @@ from global_methods import set_openai_key, set_anthropic_key, set_gemini_key
 from task_eval.evaluation import eval_question_answering
 from task_eval.evaluation_stats import analyze_aggr_acc
 from task_eval.gpt_utils import get_gpt_answers
-from task_eval.claude_utils import get_claude_answers
-from task_eval.gemini_utils import get_gemini_answers
-from task_eval.hf_llm_utils import init_hf_model, get_hf_answers
+# Harbor-parity: claude/gemini/hf branches lazy-imported below so the gpt path
+# doesn't drag in anthropic, google.generativeai, torch, transformers.
 
 import numpy as np
-import google.generativeai as genai
 
 def parse_args():
 
@@ -50,14 +48,15 @@ def main():
         set_anthropic_key()
 
     elif 'gemini' in args.model:
-        # set openai API key
+        import google.generativeai as genai
         set_gemini_key()
         if args.model == "gemini-pro-1.0":
             model_name = "models/gemini-1.0-pro-latest"
 
         gemini_model = genai.GenerativeModel(model_name)
-    
+
     elif any([model_name in args.model for model_name in ['gemma', 'llama', 'mistral']]):
+        from task_eval.hf_llm_utils import init_hf_model  # noqa: F401
         hf_pipeline, hf_model_name = init_hf_model(args)
 
     else:
@@ -87,10 +86,13 @@ def main():
             # get answers for each sample
             answers = get_gpt_answers(data, out_data, prediction_key, args)
         elif 'claude' in args.model:
+            from task_eval.claude_utils import get_claude_answers
             answers = get_claude_answers(data, out_data, prediction_key, args)
         elif 'gemini' in args.model:
+            from task_eval.gemini_utils import get_gemini_answers
             answers = get_gemini_answers(gemini_model, data, out_data, prediction_key, args)
         elif any([model_name in args.model for model_name in ['gemma', 'llama', 'mistral']]):
+            from task_eval.hf_llm_utils import get_hf_answers
             answers = get_hf_answers(data, out_data, args, hf_pipeline, hf_model_name)
         else:
             raise NotImplementedError

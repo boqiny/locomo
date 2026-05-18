@@ -6,7 +6,8 @@ from typing import List
 import numpy as np
 from collections import Counter
 import os
-from bert_score import score
+# Harbor-parity: bert_score is lazy-imported inside the bert_score function
+# below; the upstream gpt-path eval never calls it.
 from nltk.stem import PorterStemmer
 ps = PorterStemmer()
 
@@ -112,6 +113,7 @@ def exact_match_score(prediction, ground_truth):
 
 
 def bert_score(prediction, ground_truth):
+    from bert_score import score  # lazy
     prediction = normalize_answer(prediction)
     ground_truth = normalize_answer(ground_truth)
     P, R, F1 = score([prediction], [ground_truth], lang='en', verbose=False, rescale_with_baseline=True)
@@ -195,11 +197,14 @@ def eval_question_answering(qas, eval_key='prediction', metric='f1'):
     f1_count = 0
     answer_lengths = []
     for i, line in enumerate(qas):
-        # line = json.loads(line)
+        # Harbor-parity: cat-5 entries in current locomo10.json have no
+        # 'answer' key; the scorer below only looks at output text for cat 5,
+        # so a blank gold is fine.
+        gold_raw = line.get('answer', line.get('adversarial_answer', ''))
         if type(line[eval_key]) == list:
-            answer = line['answer']
+            answer = gold_raw
         else:
-            answer = str(line['answer'])
+            answer = str(gold_raw) if gold_raw is not None else ''
         if line['category'] == 3:
             answer = answer.split(';')[0].strip()
         
