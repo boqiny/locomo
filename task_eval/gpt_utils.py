@@ -5,6 +5,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import pickle
 import random
 import os, json
+import re
 from tqdm import tqdm
 import time
 from global_methods import run_chatgpt
@@ -58,16 +59,47 @@ CONV_START_PROMPT = "Below is a conversation between two people: {} and {}. The 
 
 
 def process_ouput(text):
+    """Parse the model's batched JSON response tolerantly.
 
-    single_quote_count = text.count("'")
-    double_quote_count = text.count('"')
-    if single_quote_count > double_quote_count:
-        text = text.replace('"', "")
-        text = text.replace("'", '"')
-        # print(text)
-        return json.loads(text)
-    else:
-        return json.loads(text)
+    Strategy (each falls back to the next on JSONDecodeError):
+      1. Direct json.loads.
+      2. Upstream heuristic: if more single-quotes than double, swap them.
+      3. Extract the outermost {...} block (handles prose / fences).
+      4. Regex-pluck "<digit>": "<value>" pairs.
+      5. Empty dict — caller fills missing slots with empty strings.
+    """
+
+    def _try(s):
+        try:
+            return json.loads(s)
+        except json.JSONDecodeError:
+            return None
+
+    out = _try(text)
+    if out is not None:
+        return out
+
+    if text.count("'") > text.count('"'):
+        swapped = text.replace('"', '').replace("'", '"')
+        out = _try(swapped)
+        if out is not None:
+            return out
+
+    m = re.search(r'\{.*\}', text, re.DOTALL)
+    if m:
+        block = m.group(0)
+        out = _try(block)
+        if out is not None:
+            return out
+        if block.count("'") > block.count('"'):
+            out = _try(block.replace('"', '').replace("'", '"'))
+            if out is not None:
+                return out
+
+    out = {}
+    for m in re.finditer(r'"(\d+)"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', text):
+        out[m.group(1)] = m.group(2)
+    return out
 
 
 def prepare_for_rag(args, data):
@@ -192,7 +224,10 @@ def get_input_context(data, num_question_tokens, encoding, args):
                 turn += '\n'
         
                 num_tokens = len(encoding.encode('DATE: ' + data['session_%s_date_time' % i] + '\n' + 'CONVERSATION:\n' + turn))
-                if (num_tokens + len(encoding.encode(query_conv)) + num_question_tokens) < (MAX_LENGTH[args.model]-(PER_QA_TOKEN_BUDGET*(args.batch_size))): # 20 tokens assigned for answers
+                # Strip codex/ prefix when looking up MAX_LENGTH so codex-backed
+                # runs share the same context budget as their inner model.
+                _lookup_model = args.model.split("/", 1)[1] if args.model.startswith("codex/") else args.model
+                if (num_tokens + len(encoding.encode(query_conv)) + num_question_tokens) < (MAX_LENGTH[_lookup_model]-(PER_QA_TOKEN_BUDGET*(args.batch_size))): # 20 tokens assigned for answers
                     query_conv = turn + query_conv
                 else:
                     min_session = i
@@ -331,7 +366,16 @@ def get_gpt_answers(in_data, out_data, prediction_key, args):
 
                 except Exception as e:
                     print('Error at trial %s/3' % trials, e)
-                    raise ValueError
+                    # Harbor-parity: graceful degrade — assign empty strings
+                    # to this batch (matches the Harbor side parity agent).
+                    # Retries with temperature=0 + reasoning_effort=minimal
+                    # are unlikely to help anyway.
+                    if trials >= 3:
+                        print('WARN: batch failed after 3 trials; '
+                              'assigning empty answers')
+                        answers = {str(k): '' for k in range(len(questions))}
+                        answer = json.dumps(answers)
+                        break
             
             for k, idx in enumerate(include_idxs):
                 try:

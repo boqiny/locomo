@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local parity-run outputs (not source)
+harbor_parity_out/
+
+# Smoke-test data slices
+data/locomo_smoke_*.json

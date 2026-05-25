@@ -90,16 +90,18 @@ def run_gemini(model, content: str, max_tokens: int = 0):
 
 def run_chatgpt(query, num_gen=1, num_tokens_request=1000,
                 model='gpt-5-mini', use_16k=False, temperature=1.0, wait_time=1):
-    """Harbor-parity port (gpt-5-mini only).
+    """Harbor-parity port.
 
-    Uses openai>=1 client which picks up OPENAI_API_KEY + OPENAI_BASE_URL
-    from env (parity proxy). Settings mirror the Harbor parity runner
-    `adapters/locomo/run_locomo_parity.py` byte-for-byte so both sides issue
-    identical API calls:
-        reasoning_effort = "minimal"
-        max_completion_tokens = max(num_tokens_request, 1024) * 8
-        temperature = whatever caller passes (upstream batched mode passes 0)
+    Dispatches based on ``model`` prefix:
+      - ``codex/<inner_model>``  → shells out to the codex CLI (Harbor parity
+        agentic baseline, matches the codex agent run on the Harbor side).
+      - anything else            → openai>=1 chat.completions path used by the
+        original locomo-parity-agent.
     """
+    if model.startswith("codex/"):
+        inner_model = model.split("/", 1)[1]
+        return _run_codex(query, model=inner_model, wait_time=wait_time)
+
     from openai import OpenAI, APIError, APIConnectionError, RateLimitError
     client = OpenAI(
         api_key=os.environ.get("OPENAI_API_KEY"),
@@ -124,7 +126,84 @@ def run_chatgpt(query, num_gen=1, num_tokens_request=1000,
             backoff *= 2
 
     return completion.choices[0].message.content
-    
+
+
+def _run_codex(query, model="gpt-5-mini", wait_time=1, max_retries=3):
+    """Shell out to ``codex exec`` and return its final-message text.
+
+    This mirrors what Harbor's ``codex`` agent does on the adapter side, so
+    upstream vs Harbor parity for ``model=codex/<inner>`` compares like with
+    like. Prompt is piped via stdin to avoid argv length limits.
+
+    Auth: writes an isolated ``CODEX_HOME`` per call with API-key auth, so
+    codex never falls back to the user's ChatGPT login (which doesn't have
+    gpt-5-mini). Matches harbor/src/harbor/agents/installed/codex.py.
+    """
+    import json as _json
+    import subprocess
+    import tempfile
+
+    api_key = os.environ.get("OPENAI_API_KEY") or ""
+    base_url = os.environ.get("OPENAI_BASE_URL") or ""
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY must be set for codex backend")
+
+    backoff = max(wait_time, 1)
+    last_error = None
+    for attempt in range(1, max_retries + 1):
+        with tempfile.TemporaryDirectory(prefix="locomo_codex_") as workdir:
+            codex_home = os.path.join(workdir, ".codex")
+            os.makedirs(codex_home, exist_ok=True)
+            with open(os.path.join(codex_home, "auth.json"), "w") as f:
+                _json.dump({"OPENAI_API_KEY": api_key}, f)
+            if base_url:
+                # codex 0.118+ honors openai_base_url only from config.toml, not env.
+                with open(os.path.join(codex_home, "config.toml"), "w") as f:
+                    f.write(f'openai_base_url = "{base_url}"\n')
+            out_path = os.path.join(workdir, "codex_last_message.txt")
+            cmd = [
+                "codex", "exec",
+                "--model", model,
+                "--skip-git-repo-check",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--ephemeral",
+                "--output-last-message", out_path,
+                "-",
+            ]
+            env = {**os.environ, "CODEX_HOME": codex_home, "OPENAI_API_KEY": api_key}
+            if base_url:
+                env["OPENAI_BASE_URL"] = base_url
+            try:
+                proc = subprocess.run(
+                    cmd, input=query, text=True,
+                    capture_output=True, cwd=workdir, env=env, timeout=900,
+                )
+            except subprocess.TimeoutExpired as e:
+                last_error = e
+                print(f"codex timed out (attempt {attempt}/{max_retries})")
+                time.sleep(backoff)
+                backoff *= 2
+                continue
+            if proc.returncode != 0:
+                last_error = RuntimeError(
+                    f"codex exec rc={proc.returncode}: {proc.stderr[-500:]}"
+                )
+                print(f"codex error (attempt {attempt}/{max_retries}): {last_error}")
+                time.sleep(backoff)
+                backoff *= 2
+                continue
+            try:
+                with open(out_path, encoding="utf-8") as f:
+                    return f.read()
+            except FileNotFoundError:
+                last_error = RuntimeError("codex did not write --output-last-message file")
+                print(f"codex missing output (attempt {attempt}/{max_retries})")
+                time.sleep(backoff)
+                backoff *= 2
+                continue
+    raise RuntimeError(f"codex failed after {max_retries} attempts: {last_error}")
+
+
 
 def run_chatgpt_with_examples(query, examples, input, num_gen=1, num_tokens_request=1000, use_16k=False, wait_time = 1, temperature=1.0):
 
