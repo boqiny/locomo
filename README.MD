@@ -3,6 +3,36 @@
 
 **Paper**: [pdf](https://github.com/snap-research/locomo/tree/main/static/paper/locomo.pdf)
 
+---
+
+## Harbor parity branch (`harbor-parity`)
+
+This branch ports the upstream LOCOMO eval to support Harbor's parity workflow with the standard `codex` agent.
+
+**What changed vs. upstream main:**
+
+- `global_methods.run_chatgpt` ports the OpenAI path to `openai>=1` and adds a `codex/<inner_model>` dispatch (e.g. `--model codex/gpt-5-mini`) that shells out to `codex exec` with an isolated `CODEX_HOME` for API-key auth and a 30s+ exponential backoff. Settings (`reasoning_effort="minimal"`, `max_completion_tokens=max(num_tokens_request, 1024)*8`) mirror the Harbor codex agent so both sides issue identical requests.
+- `task_eval/gpt_utils.py` strips the `codex/` prefix when looking up `MAX_LENGTH`.
+- `scripts/run_harbor_parity.sh` is a 3-run reproducer driven by `MODEL` and `BATCH_SIZE` env vars.
+
+**Reproduce the Harbor parity numbers:**
+
+```bash
+export OPENAI_API_KEY="<your key>"
+# Optional: parity proxy URL — defaults to OpenAI's API
+export OPENAI_BASE_URL="<your endpoint>"
+
+# Single run, codex+gpt-5-mini, batch size 20:
+MODEL=codex/gpt-5-mini RUNS=1 bash scripts/run_harbor_parity.sh
+
+# Per-run F1 lands in harbor_parity_out/run_<N>.json (predictions + per-question F1)
+# Aggregate stats land in harbor_parity_out/run_<N>_stats.json
+```
+
+The Harbor side is reproduced via `uv run harbor run -c adapters/locomo/run_locomo_parity_codex.yaml` against the LOCOMO Harbor adapter at <https://github.com/harbor-framework/harbor/pull/1635>.
+
+---
+
 ## Data
 
 We release LoCoMo, a high-quality evaluation benchmark consisting of *very* long-term conversational data. The benchmark consists of ten conversations. Each conversation is annotated for the **question-answering** and **event-summarization** tasks. Additionally, the dialogs in each conversation can be used for the **multimodal-dialog-generation** task. See statistics of the dataset in the Table below.
