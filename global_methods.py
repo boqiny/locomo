@@ -148,12 +148,31 @@ def _run_codex(query, model="gpt-5-mini", wait_time=1, max_retries=3):
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY must be set for codex backend")
 
+    # Diagnostic: LOCOMO_CODEX_FILEREAD=1 makes codex read the transcript from a
+    # file (like the Harbor agent does) instead of inlining it in the prompt.
+    # Used only to isolate the file-read-vs-inline variable in parity analysis.
+    context_text = None
+    prompt_text = query
+    if os.environ.get("LOCOMO_CODEX_FILEREAD"):
+        _marker = "Based on the above conversations"
+        if _marker in query:
+            _ctx, _instr = query.split(_marker, 1)
+            context_text = _ctx.strip()
+            prompt_text = (
+                "The full conversation transcript is in the file `conversation.md` "
+                "in your current working directory. Read it carefully, then answer.\n\n"
+                "Based on the conversation in conversation.md" + _instr
+            )
+
     backoff = max(wait_time, 1)
     last_error = None
     for attempt in range(1, max_retries + 1):
         with tempfile.TemporaryDirectory(prefix="locomo_codex_") as workdir:
             codex_home = os.path.join(workdir, ".codex")
             os.makedirs(codex_home, exist_ok=True)
+            if context_text is not None:
+                with open(os.path.join(workdir, "conversation.md"), "w") as f:
+                    f.write(context_text)
             with open(os.path.join(codex_home, "auth.json"), "w") as f:
                 _json.dump({"OPENAI_API_KEY": api_key}, f)
             if base_url:
@@ -175,8 +194,9 @@ def _run_codex(query, model="gpt-5-mini", wait_time=1, max_retries=3):
                 env["OPENAI_BASE_URL"] = base_url
             try:
                 proc = subprocess.run(
-                    cmd, input=query, text=True,
-                    capture_output=True, cwd=workdir, env=env, timeout=900,
+                    cmd, input=prompt_text, text=True,
+                    capture_output=True, cwd=workdir, env=env,
+                    timeout=int(os.environ.get("CODEX_TIMEOUT", "900")),
                 )
             except subprocess.TimeoutExpired as e:
                 last_error = e

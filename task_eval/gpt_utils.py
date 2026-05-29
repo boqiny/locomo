@@ -316,7 +316,12 @@ def get_gpt_answers(in_data, out_data, prediction_key, args):
         if args.use_rag:
             query_conv, context_ids = get_rag_context(context_database, query_vectors[include_idxs][0], args) # rag mode is set to batch size 1
         else:
-            question_prompt =  QA_PROMPT_BATCH + "\n".join(["%s: %s" % (k, q) for k, q in enumerate(questions)])
+            _batch_prompt = QA_PROMPT_BATCH
+            if os.environ.get("LOCOMO_PROMPT_EXAMPLE"):
+                # Diagnostic: append the same short-value JSON example Harbor's
+                # instruction.md carries, to test whether it changes refusal behavior.
+                _batch_prompt = QA_PROMPT_BATCH + '\nExample:\n{"0": "7 May 2023", "1": "mental health"}\n'
+            question_prompt =  _batch_prompt + "\n".join(["%s: %s" % (k, q) for k, q in enumerate(questions)])
             num_question_tokens = len(encoding.encode(question_prompt))
             query_conv = get_input_context(in_data['conversation'], num_question_tokens + start_tokens, encoding, args)
             query_conv = start_prompt + query_conv

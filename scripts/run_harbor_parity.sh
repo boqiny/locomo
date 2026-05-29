@@ -10,7 +10,9 @@ export OPENAI_BASE_URL="REMOVED-ENDPOINT"
 export OPENAI_API_KEY="REMOVED-REVOKED-KEY"
 
 : "${MODEL:=gpt-5-mini}"
-: "${BATCH_SIZE:=20}"
+# All questions per conversation in one call, to match the Harbor side, which
+# hands the agent every question at once (no batching knob on the codex agent).
+: "${BATCH_SIZE:=200}"
 : "${RUNS:=3}"
 : "${START_RUN:=1}"  # 1-indexed; bump to 2/3/... when extending a prior session
 
