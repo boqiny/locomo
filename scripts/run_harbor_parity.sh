@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # One-shot reproducer for the Harbor LOCOMO parity numbers on this fork.
-# Hardcodes the parity proxy URL + API key (per the user's request — note these
-# will be public once this branch is pushed to a public fork).
+#
+# Export your endpoint and key in the shell before running (never hardcode them):
+#   export OPENAI_BASE_URL="https://your-endpoint/v1"
+#   export OPENAI_API_KEY="sk-..."
 #
 # Usage:  bash scripts/run_harbor_parity.sh
 set -euo pipefail
 
-export OPENAI_BASE_URL="REMOVED-ENDPOINT"
-export OPENAI_API_KEY="REMOVED-REVOKED-KEY"
+: "${OPENAI_BASE_URL:?Set OPENAI_BASE_URL in your shell before running}"
+: "${OPENAI_API_KEY:?Set OPENAI_API_KEY in your shell before running}"
 
 : "${MODEL:=gpt-5-mini}"
 # All questions per conversation in one call, to match the Harbor side, which
