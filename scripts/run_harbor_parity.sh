@@ -15,8 +15,14 @@ set -euo pipefail
 # All questions per conversation in one call, to match the Harbor side, which
 # hands the agent every question at once (no batching knob on the codex agent).
 : "${BATCH_SIZE:=200}"
-: "${RUNS:=3}"
+: "${RUNS:=5}"
 : "${START_RUN:=1}"  # 1-indexed; bump to 2/3/... when extending a prior session
+
+# Both ends read the transcript from a file so codex does the same active
+# grounding as the Harbor agent (this is what brings cat-5 into parity). The
+# single batch-200 codex call needs a longer timeout than the 900s default.
+export LOCOMO_CODEX_FILEREAD="${LOCOMO_CODEX_FILEREAD:-1}"
+export CODEX_TIMEOUT="${CODEX_TIMEOUT:-2400}"
 
 # Upstream's pinned requirements.txt has openai 0.28; we need v1+.
 pip install -q -U 'openai>=1' tiktoken
